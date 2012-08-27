@@ -10,7 +10,7 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
             numeric: /^[0-9]+$/,
             integer: /^\-?[0-9]+$/,
             decimal: /^\-?[0-9]*\.?[0-9]+$/,
-            email: /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,6}$/i,
+            email: /^((([a-z]|\d|[!#\$%&'\*\+\-\/=\?\^_`{\|}~]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])+(\.([a-z]|\d|[!#\$%&'\*\+\-\/=\?\^_`{\|}~]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])+)*)|((\x22)((((\x20|\x09)*(\x0d\x0a))?(\x20|\x09)+)?(([\x01-\x08\x0b\x0c\x0e-\x1f\x7f]|\x21|[\x23-\x5b]|[\x5d-\x7e]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])|(\\([\x01-\x09\x0b\x0c\x0d-\x7f]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF]))))*(((\x20|\x09)*(\x0d\x0a))?(\x20|\x09)+)?(\x22)))@((([a-z]|\d|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])|(([a-z]|\d|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])([a-z]|\d|-|\.|_|~|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])*([a-z]|\d|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])))\.)+(([a-z]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])|(([a-z]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])([a-z]|\d|-|\.|_|~|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])*([a-z]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])))$/i,
             alpha: /^[a-z]+$/i,
             alphaNumeric: /^[a-z0-9]+$/i,
             alphaDash: /^[a-z0-9_-]+$/i,
@@ -129,20 +129,17 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
             },
 
             url: function(field) {
-                if (! _trim(field.elem.value)) {
-                    return true;
-                }
-
                 return (rules.url[0].test(field.elem.value) || rules.url[1].test(field.elem.value));
             }
         };
     }());
 
-    var Form = function(form, fields, handlers) {
+    var Form = function(form) {
         this.elem = form;
-        this.fields = fields;
-        this.handlers = handlers;
+        this.fields = [];
+        this.handlers = {};
         this.isValid = null;
+        this.validated = false;
     };
 
     Form.prototype = {
@@ -161,14 +158,13 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
             this.isValid = true;
 
             this.handlers.onPreCheck.call(this, Field.format(fields));
-
             for (var i = 0, length = fields.length; i < length; i++) {
                 var element = fields[i].elem;
                 if (typeof element === 'undefined' || element.disabled) {
+                    // Run through the rules for each field.
                     continue;
                 }
 
-                // Run through the rules for each field.
                 if (! fields[i].validate()) {
                     this.isValid = false;
                 }
@@ -177,21 +173,58 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
             this.handlers.onPostCheck.call(this, Field.format(fields));
             this.handlers.onFormCheck.call(this, Form.format(this));
 
-            console.log(this.isValid);
+            // Set the form status as validated
+            this.validated = true;
 
             return this.isValid;
+        },
+
+        add: function(fields) {
+            fields = fields || [];
+
+            for (var i = 0, length = fields.length; i < length; i++) {
+                // If passed in incorrectly, we need to skip the field.
+                if (! fields[i].name) {
+                    continue;
+                }
+
+                var names = (_isArray(fields[i].name)) ? fields[i].name : [fields[i].name];
+                for (var j = 0, _length = names.length; j < _length; j++) {
+                    // If the field does not exist - skip the field.
+                    if (! this.elem[names[j]]) {
+                        continue;
+                    }
+
+                    // Build the master fields array that has all the information needed to validate
+                    this.fields.push(new Field({
+                        name: names[j],
+                        elem: this.elem[names[j]],
+                        form: this.elem,
+                        rules: (_isArray(fields[i].rules)) ? fields[i].rules : [fields[i].rules],
+                        messages: (_isArray(fields[i].messages)) ? fields[i].messages : [fields[i].messages],
+                        options: $.extend({}, Field.defaults, fields[i].options)
+                    }));
+                }
+            }
+
+            return this;
+        },
+
+        handler: function(handlers) {
+            this.handlers = handlers;
+
+            return this;
         },
 
         // For internal use only.
         _checkField: function(field) {
             field.validate();
-            this.handlers.onFieldCheck.call(this, Field.format(field));
+            this.handlers.onFieldCheck.call(this, Field.format(field)[0]);
 
             return field.isValid;
         },
 
-        // For internal use only.
-        _findField: function(name) {
+        findField: function(name) {
             this.cache = this.cache || {};
 
             if (this.cache[name]) {
@@ -234,13 +267,10 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
     Field.prototype = {
         /**
          * Looks at the field value and evaluates it against the given rules
-         * @param updateValidated
          * @return {*}
          * @public
          */
-        validate: function(updateValidated) {
-            updateValidated = (typeof updateValidated !== 'undefined') ? updateValidated : true;
-
+        validate: function() {
             this.isValid = true;
 
             // Run through the rules and execute the validation methods as needed
@@ -249,7 +279,7 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
                     param = null,
                     parts;
 
-                if (_isFunc(method)) {
+                if (_isFunc(method)) { // callback function
                     if (! method.call(this.elem)) {
                         this.isValid = false;
                         this.errorIndex = i;
@@ -263,9 +293,13 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
                         param = parts[2];
                     }
 
+                    if ((method !== 'required' && method !== 'matches') && ! _trim(this.elem.value)) {
+                        continue;
+                    }
+
                     // If the hook is defined, run it to find any validation errors
                     if (_isFunc(Rules[method])) {
-                        if (! Rules[method](this, param)) {
+                        if (! Rules[method].call(Rules, this, param)) {
                             this.isValid = false;
                             this.errorIndex = i;
                             // Break out so as to not spam with validation errors (i.e. required and valid_email)
@@ -275,9 +309,8 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
                 }
             }
 
-            if (updateValidated) {
-                this.validated = true;
-            }
+            // Set the field status as validated
+            this.validated = true;
 
             return this.isValid;
         }
@@ -301,14 +334,14 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
             });
         }
 
-        return (results.length === 1 ? results[0] : results);
+        return results;
     };
 
     /**
      * Validation
      */
     Validation.name = 'validation.js';
-    Validation.version = '0.3';
+    Validation.version = '0.4';
 
     // Default handlers
     Validation.handlers = {
@@ -340,55 +373,20 @@ var Validation = (typeof module !== "undefined" && module.exports) || {};
      * Init the validation
      */
     Validation.init = function(form, fields, handlers) {
-        // Process an array of fields and build a form tree
-        var buildFormTree = function(form, fields, handlers) {
-            if (typeof form === 'string') {
-                form = document.forms[form];
-            }
+        if (typeof form === 'string') {
+            form = document.forms[form];
+        }
 
-            // Check if the form exist
-            if (typeof form === 'undefined') {
-                form = null;
-            }
+        // Check if the form exist
+        if (typeof form === 'undefined') {
+            form = null;
+        }
 
-            var formTree = {
-                form: form,
-                fields: [],
-                handlers: $.extend({}, this.handlers, handlers)
-            };
+        var form = new Form(form);
+        form.add(fields);
+        form.handler($.extend({}, this.handlers, handlers));
 
-            for (var i = 0, length = fields.length; i < length; i++) {
-                // If passed in incorrectly, we need to skip the field.
-                if (! fields[i].name) {
-                    continue;
-                }
-
-                var names = (_isArray(fields[i].name)) ? fields[i].name : [fields[i].name];
-                for (var j = 0, _length = names.length; j < _length; j++) {
-                    // If the field does not exist - skip the field.
-                    if (! form[names[j]]) {
-                        continue;
-                    }
-
-                    // Build the master fields array that has all the information needed to validate
-                    formTree.fields.push(new Field({
-                        name: names[j],
-                        elem: form[names[j]],
-                        form: form,
-                        rules: (_isArray(fields[i].rules)) ? fields[i].rules : [fields[i].rules],
-                        messages: (_isArray(fields[i].messages)) ? fields[i].messages : [fields[i].messages],
-                        options: $.extend({}, Field.defaults, fields[i].options)
-                    }));
-                }
-            }
-
-            return formTree;
-        };
-
-        var formTree = buildFormTree.call(this, form, fields, handlers),
-            formObj = new Form(formTree.form, formTree.fields, formTree.handlers);
-
-        return formObj;
+        return form;
     };
 
     Validation.rules = function(rules) {
@@ -441,7 +439,7 @@ var ValidationEvent = (typeof module !== "undefined" && module.exports) || {};
             var target = $(event.target);
 
             if (target.is(event.data._target)) {
-                var field = formObj._findField(target.attr('name'));
+                var field = formObj.findField(target.attr('name'));
 
                 if ($.isEmptyObject(field)) {
                     return;
@@ -453,7 +451,7 @@ var ValidationEvent = (typeof module !== "undefined" && module.exports) || {};
                     }
 
                     if (field.validated) {
-                        formObj._checkField(field);
+                        (formObj.validated) ? formObj.check() : formObj._checkField(field);
                     }
                 }
                 else if (event.type === 'focusout') {
@@ -463,9 +461,6 @@ var ValidationEvent = (typeof module !== "undefined" && module.exports) || {};
 
                     formObj._checkField(field);
                 }
-                else { // click
-                    formObj._checkField(field);
-                }
             }
         };
 
@@ -473,8 +468,7 @@ var ValidationEvent = (typeof module !== "undefined" && module.exports) || {};
         $(formObj.elem).submit(function(event) {
             return formObj.check();
         })
-        .bind('focusout keyup', {_target: ':text, [type="password"], [type="file"], select, textarea'}, eventHandler)
-        .bind('click', {_target: '[type="radio"], [type="checkbox"]'}, eventHandler);
+            .bind('focusout keyup', {_target: ':text, [type="password"], [type="file"], select, textarea'}, eventHandler);
 
         return formObj;
     };
